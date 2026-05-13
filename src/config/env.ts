@@ -15,4 +15,7 @@ export const config = {
   CLIENT_URL: process.env.CLIENT_URL || 'http://localhost:3000',
   REDIS_URL: process.env.REDIS_URL || '',
   LIVE_POLL_INTERVAL_MS: Number(process.env.LIVE_POLL_INTERVAL_MS) || 45_000,
+  /** Google AI Studio / Gemini — see https://aistudio.google.com/apikey */
+  GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
+  GEMINI_MODEL: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
 };
