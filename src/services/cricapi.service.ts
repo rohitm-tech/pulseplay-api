@@ -111,6 +111,71 @@ function rowToBallLabel(c: Record<string, unknown>): string {
   return '';
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isCricApiRateOrBlock(e: unknown): boolean {
+  if (!(e instanceof ApiError)) return false;
+  const m = e.message.toLowerCase();
+  return m.includes('blocked') || m.includes('rate') || m.includes('limit');
+}
+
+/** Few pages + pause between calls — CricAPI free tiers block rapid bursts (many pages at once). */
+const CURRENT_MATCHES_MAX_PAGES = 5;
+const CURRENT_MATCHES_INTER_PAGE_MS = 650;
+const CURRENT_MATCHES_CACHE_TTL_SEC = 120;
+
+let currentMatchesInflight: Promise<CricMatchSummary[]> | null = null;
+let lastGoodCurrentMatches: CricMatchSummary[] = [];
+/** When Redis is off, avoid refetching on every short poll interval. */
+let lastCurrentMatchesNetworkAt = 0;
+const CURRENT_MATCHES_NO_REDIS_COOLDOWN_MS = 90_000;
+
+/** CricAPI paginates `currentMatches`; offset advances by the prior page length (skip-style). */
+async function fetchAllCurrentMatchPages(): Promise<CricMatchSummary[]> {
+  const seen = new Set<string>();
+  const out: CricMatchSummary[] = [];
+  let offset = 0;
+
+  for (let page = 0; page < CURRENT_MATCHES_MAX_PAGES; page++) {
+    if (page > 0) await delay(CURRENT_MATCHES_INTER_PAGE_MS);
+    try {
+      const { data } = await axios.get(`${config.CRIC_API_BASE}/currentMatches`, {
+        params: { apikey: config.CRIC_API_KEY, offset },
+        timeout: 12_000,
+      });
+      const root = assertCricResponse(data);
+      const list = (root.data ?? []) as Record<string, unknown>[];
+      if (!Array.isArray(list)) {
+        throw new ApiError(502, 'Unexpected CricAPI response for currentMatches', root);
+      }
+      if (list.length === 0) break;
+
+      let added = 0;
+      for (const m of list) {
+        const row = mapMatchRow(m);
+        if (row.id.length > 0 && !seen.has(row.id)) {
+          seen.add(row.id);
+          out.push(row);
+          added++;
+        }
+      }
+      if (added === 0) break;
+
+      offset += list.length;
+    } catch (e) {
+      if (out.length > 0 && isCricApiRateOrBlock(e)) {
+        console.warn('[cricapi] currentMatches pagination stopped (rate/block); using partial page set', e);
+        break;
+      }
+      throw e;
+    }
+  }
+
+  return out;
+}
+
 export async function fetchCurrentMatches(): Promise<CricMatchSummary[]> {
   requireCricKey();
 
@@ -118,25 +183,42 @@ export async function fetchCurrentMatches(): Promise<CricMatchSummary[]> {
   const cached = await redisCache.get<CricMatchSummary[]>(cacheKey);
   if (cached) return cached;
 
-  try {
-    const { data } = await axios.get(`${config.CRIC_API_BASE}/currentMatches`, {
-      params: { apikey: config.CRIC_API_KEY, offset: 0 },
-      timeout: 12_000,
-    });
-    const root = assertCricResponse(data);
-    const list = (root.data ?? []) as Record<string, unknown>[];
-    if (!Array.isArray(list)) {
-      throw new ApiError(502, 'Unexpected CricAPI response for currentMatches', root);
+  if (!redisCache.isEnabled()) {
+    const now = Date.now();
+    if (
+      now - lastCurrentMatchesNetworkAt < CURRENT_MATCHES_NO_REDIS_COOLDOWN_MS &&
+      lastGoodCurrentMatches.length > 0
+    ) {
+      return lastGoodCurrentMatches;
     }
-    const mapped = list.map((m) => mapMatchRow(m)).filter((row) => row.id.length > 0);
-    await redisCache.set(cacheKey, mapped, 30);
-    return mapped;
-  } catch (e) {
-    if (e instanceof ApiError) throw e;
-    const msg = e instanceof Error ? e.message : String(e);
-    console.error('[cricapi] currentMatches failed', e);
-    throw new ApiError(502, `CricAPI currentMatches request failed: ${msg}`);
   }
+
+  if (currentMatchesInflight) return currentMatchesInflight;
+
+  currentMatchesInflight = (async () => {
+    try {
+      if (!redisCache.isEnabled()) lastCurrentMatchesNetworkAt = Date.now();
+      const mapped = await fetchAllCurrentMatchPages();
+      if (mapped.length > 0) {
+        lastGoodCurrentMatches = mapped;
+        await redisCache.set(cacheKey, mapped, CURRENT_MATCHES_CACHE_TTL_SEC);
+      }
+      return mapped;
+    } catch (e) {
+      if (isCricApiRateOrBlock(e) && lastGoodCurrentMatches.length > 0) {
+        console.warn('[cricapi] currentMatches upstream blocked; serving last successful snapshot');
+        return lastGoodCurrentMatches;
+      }
+      if (e instanceof ApiError) throw e;
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error('[cricapi] currentMatches failed', e);
+      throw new ApiError(502, `CricAPI currentMatches request failed: ${msg}`);
+    } finally {
+      currentMatchesInflight = null;
+    }
+  })();
+
+  return currentMatchesInflight;
 }
 
 export async function fetchMatchById(id: string): Promise<CricMatchSummary | null> {

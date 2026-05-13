@@ -20,6 +20,10 @@ import adminRoutes from './modules/admin/admin.routes';
 
 const app = express();
 
+function countRouterHandlers(r: { stack?: { route?: unknown }[] }): number {
+  return r.stack?.filter((layer) => layer.route).length ?? 0;
+}
+
 const swaggerSpec = swaggerJsdoc({
   definition: {
     openapi: '3.0.0',
@@ -44,7 +48,15 @@ app.use(apiLimiter);
 app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, service: 'pulseplay-backend' });
+  res.json({
+    ok: true,
+    service: 'pulseplay-backend',
+    /** If `users` or `features` is 0, this process did not load those routers — restart the backend. */
+    routers: {
+      users: countRouterHandlers(userRoutes as unknown as { stack?: { route?: unknown }[] }),
+      features: countRouterHandlers(featuresRoutes as unknown as { stack?: { route?: unknown }[] }),
+    },
+  });
 });
 
 app.use('/api/auth', authRoutes);
