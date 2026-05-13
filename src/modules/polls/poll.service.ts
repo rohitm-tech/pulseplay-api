@@ -4,6 +4,7 @@ import { Poll } from './poll.model';
 import { User } from '../users/user.model';
 import { Leaderboard } from '../leaderboard/leaderboard.model';
 import { ApiError } from '../../utils/apiError';
+import { createNotification } from '../notifications/notification.service';
 import type { Server } from 'socket.io';
 
 let ioRef: Server | null = null;
@@ -76,6 +77,16 @@ export async function closePollAndScore(pollId: string) {
       { $inc: { xp: 25, correctPredictions: 1, streak: 1 } },
       { upsert: true }
     );
+    try {
+      await createNotification(w.userId.toString(), {
+        type: 'poll',
+        title: 'Poll win',
+        body: `You nailed it — +25 XP on: "${poll.question.slice(0, 80)}${poll.question.length > 80 ? '…' : ''}"`,
+        meta: { pollId: poll._id.toString(), matchId: poll.matchId },
+      });
+    } catch (e) {
+      console.warn('[poll] notification', e);
+    }
   }
   const losers = poll.votes.filter((v) => v.option !== poll.correctAnswer);
   for (const l of losers) {

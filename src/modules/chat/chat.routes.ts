@@ -1,11 +1,40 @@
-import { Response } from 'express';
-import { Router } from 'express';
+import { Response, Router } from 'express';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { authMiddleware, AuthRequest } from '../../middleware/auth.middleware';
 import { ChatMessage } from './chat.model';
+import { ChatReport } from './chatReport.model';
 import { Types } from 'mongoose';
+import { z } from 'zod';
 
 const router = Router();
+
+const reportSchema = z.object({
+  messageId: z.string(),
+  matchId: z.string(),
+  room: z.string(),
+  reason: z.string().max(500).optional(),
+});
+
+router.post(
+  '/report',
+  authMiddleware,
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const body = reportSchema.parse(req.body);
+    const msg = await ChatMessage.findById(body.messageId);
+    if (!msg) {
+      res.status(404).json({ success: false, message: 'Message not found' });
+      return;
+    }
+    await ChatReport.create({
+      reporterId: new Types.ObjectId(req.auth!.sub),
+      messageId: new Types.ObjectId(body.messageId),
+      matchId: body.matchId,
+      room: body.room,
+      reason: body.reason ?? '',
+    });
+    res.json({ success: true, message: 'Report received' });
+  })
+);
 
 router.get(
   '/:matchId',

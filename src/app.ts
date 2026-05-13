@@ -9,11 +9,13 @@ import { ApiError } from './utils/apiError';
 import { apiLimiter } from './middleware/rateLimit.middleware';
 
 import authRoutes from './modules/auth/auth.routes';
+import userRoutes from './modules/users/user.routes';
 import matchRoutes from './modules/matches/match.routes';
 import pollRoutes from './modules/polls/poll.routes';
 import leaderboardRoutes from './modules/leaderboard/leaderboard.routes';
 import chatRoutes from './modules/chat/chat.routes';
 import aiRoutes from './modules/ai/ai.routes';
+import featuresRoutes from './modules/features/features.routes';
 import adminRoutes from './modules/admin/admin.routes';
 
 const app = express();
@@ -46,11 +48,13 @@ app.get('/health', (_req, res) => {
 });
 
 app.use('/api/auth', authRoutes);
+app.use('/api/users', userRoutes);
 app.use('/api/matches', matchRoutes);
 app.use('/api/polls', pollRoutes);
 app.use('/api/leaderboard', leaderboardRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/features', featuresRoutes);
 app.use('/api/admin', adminRoutes);
 
 app.use((_req, res) => {

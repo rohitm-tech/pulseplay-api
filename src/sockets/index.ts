@@ -1,9 +1,10 @@
 import { Server, Socket } from 'socket.io';
 import { Types } from 'mongoose';
 import { verifyAccessToken, AccessPayload } from '../utils/jwt';
-import { parseCommentaryLine } from '../services/commentaryProcessor.service';
+import { parseCommentaryLine, type ParsedCricketEvent } from '../services/commentaryProcessor.service';
 import { ChatMessage } from '../modules/chat/chat.model';
 import { setPollsIo } from '../modules/polls/poll.service';
+import { isToxicOrSpam } from '../services/toxicFilter.service';
 
 function optionalSocketAuth(socket: Socket, next: (err?: Error) => void) {
   try {
@@ -80,12 +81,17 @@ export function registerSockets(io: Server): void {
           return;
         }
         const r = room || `match:${matchId}`;
+        const body = String(text).slice(0, 2000);
+        if (isToxicOrSpam(body)) {
+          socket.emit('error', { message: 'Message blocked by safety filter.' });
+          return;
+        }
         const msg = await ChatMessage.create({
           matchId,
           room: r,
           userId: new Types.ObjectId(user.sub),
           userName: userName || 'Fan',
-          text: String(text).slice(0, 2000),
+          text: body,
         });
         chatNs.to(r).emit('chat_message', {
           id: msg._id.toString(),
@@ -145,5 +151,27 @@ export function emitNewCommentary(io: Server, matchId: string, ball: { text: str
     matchId,
     ...ball,
     structured,
+  });
+  emitPulseMoment(io, matchId, structured);
+}
+
+const MOMENT_TYPES = new Set<ParsedCricketEvent['type']>(['SIX', 'FOUR', 'WICKET', 'WIN', 'FIFTY', 'CENTURY']);
+
+export function emitPulseMoment(io: Server, matchId: string, structured: ParsedCricketEvent) {
+  if (!MOMENT_TYPES.has(structured.type)) return;
+  const titles: Record<string, string> = {
+    SIX: 'Maximum',
+    FOUR: 'Boundary',
+    WICKET: 'Wicket',
+    WIN: 'Result',
+    FIFTY: 'Fifty',
+    CENTURY: 'Hundred',
+  };
+  io.of('/matches').to(`match:${matchId}`).emit('pulse_moment', {
+    matchId,
+    kind: structured.type,
+    title: titles[structured.type] ?? structured.type,
+    detail: structured.raw.slice(0, 200),
+    intensity: structured.type === 'SIX' || structured.type === 'WIN' ? 1 : 0.75,
   });
 }

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { fetchCommentary, fetchMatchById } from './cricapi.service';
 import { geminiService } from './geminiService';
+import { ApiError } from '../utils/apiError';
 
 export interface AiInsight {
   id: string;
@@ -8,6 +9,13 @@ export interface AiInsight {
   body: string;
   tone: 'hype' | 'analytical';
   createdAt: string;
+}
+
+/** Gemini-powered match digest: narrative summary, bullet highlights, and tone cards. */
+export interface MatchAiPack {
+  summary: string;
+  highlights: string[];
+  insights: AiInsight[];
 }
 
 const insightItemSchema = z.object({
@@ -19,32 +27,10 @@ const insightItemSchema = z.object({
 
 const insightsArraySchema = z.array(insightItemSchema).min(1).max(8);
 
-function mockInsights(matchId: string): AiInsight[] {
-  const now = new Date().toISOString();
-  return [
-    {
-      id: `${matchId}-sum`,
-      title: 'Match summary',
-      body: 'Run rate climbing in the middle overs — spinners applying the squeeze from both ends.',
-      tone: 'analytical',
-      createdAt: now,
-    },
-    {
-      id: `${matchId}-mom`,
-      title: 'Momentum',
-      body: 'Chasing side ahead of par on DLS-style trajectory; boundary every 2.1 overs in last five.',
-      tone: 'analytical',
-      createdAt: now,
-    },
-    {
-      id: `${matchId}-hype`,
-      title: 'Hype track',
-      body: 'Stadium noise at 11 — this over could flip the game. Hold tight.',
-      tone: 'hype',
-      createdAt: now,
-    },
-  ];
-}
+const summaryHighlightsSchema = z.object({
+  summary: z.string().min(1),
+  highlights: z.array(z.string().min(1)).min(1).max(12),
+});
 
 function normalizeInsights(matchId: string, raw: z.infer<typeof insightsArraySchema>): AiInsight[] {
   const now = new Date().toISOString();
@@ -57,58 +43,97 @@ function normalizeInsights(matchId: string, raw: z.infer<typeof insightsArraySch
   }));
 }
 
+function buildContextBlock(matchId: string, match: Awaited<ReturnType<typeof fetchMatchById>>, commentaryLines: string[]) {
+  return JSON.stringify(
+    {
+      matchId,
+      match: match ?? { id: matchId, note: 'No match_info payload from CricAPI for this id.' },
+      recentCommentaryLines: commentaryLines,
+    },
+    null,
+    2
+  );
+}
+
 /**
- * Match insights: uses Gemini when `GEMINI_API_KEY` is set; otherwise returns mock cards.
+ * Summary + highlights + insight cards from live CricAPI match + commentary (Gemini, `@google/genai` — same pattern as HackAIBengaluru).
  */
-export async function getMatchInsights(matchId: string): Promise<AiInsight[]> {
+export async function getMatchAiAnalysis(matchId: string): Promise<MatchAiPack> {
   if (!geminiService.isConfigured()) {
-    return mockInsights(matchId);
+    throw new ApiError(
+      503,
+      'GEMINI_API_KEY is not set. Add it to backend/.env (see https://aistudio.google.com/apikey) to enable AI summaries and highlights.'
+    );
   }
 
-  try {
-    const [match, commentary] = await Promise.all([
-      fetchMatchById(matchId),
-      fetchCommentary(matchId),
-    ]);
-    const recent = commentary.slice(-24).map((c) => `[${c.over}] ${c.text}`);
-    const context = JSON.stringify(
-      {
-        match: match ?? { id: matchId, note: 'Limited match metadata available.' },
-        recentCommentaryLines: recent,
-      },
-      null,
-      2
-    );
+  const [match, commentary] = await Promise.all([fetchMatchById(matchId), fetchCommentary(matchId)]);
+  const recent = commentary.slice(-40).map((c) => `[${c.over}.${c.ball}] ${c.text}`);
+  const context = buildContextBlock(matchId, match, recent);
 
-    const prompt = `You are PulsePlay, a sharp IPL / T20 cricket co-pilot. Given live-ish context (match summary + recent ball-by-ball lines), produce 3 to 5 insight cards for fans watching on a second screen.
+  const systemTone =
+    'You are PulsePlay, a sharp cricket co-pilot for T20 / IPL fans. Only use facts present in the JSON context; if scores or names are missing, say so briefly instead of inventing.';
+
+  const summaryPrompt = `${systemTone}
+
+Task: Write a tight match snapshot for someone glancing at a second screen.
 
 Rules:
-- Be specific to the teams/score situation when the data allows; if data is thin, say what you can infer and stay honest.
-- Mix tones: include at least one "hype" card and at least one "analytical" card.
-- Keep each body under 320 characters, punchy, no markdown, no hashtags.
+- summary: 2–4 sentences, plain text, no markdown, no hashtags.
+- highlights: 4–8 short bullet phrases (each under 120 characters) for the most interesting recent moments, tactical notes, or scoreboard pressure — grounded in the data.
+
+Context JSON:
+${context}`;
+
+  const insightsPrompt = `${systemTone}
+
+Task: Produce 3 to 5 insight cards for fans watching on a second screen.
+
+Rules:
+- Be specific to teams / score / recent balls when the data allows; if data is thin, stay honest.
+- Mix tones: at least one "hype" and one "analytical".
+- Each body under 320 characters, punchy, no markdown, no hashtags.
 - ids: short kebab or slug unique strings.
 
 Context JSON:
 ${context}`;
 
-    const parsed = await geminiService.generateJSON<unknown>(prompt, [
-      {
-        id: 'string',
-        title: 'string',
-        body: 'string',
-        tone: 'hype | analytical',
-      },
+  try {
+    const [shRaw, insRaw] = await Promise.all([
+      geminiService.generateJSON<unknown>(summaryPrompt, {
+        summary: 'string',
+        highlights: ['string'],
+      }),
+      geminiService.generateJSON<unknown>(insightsPrompt, [
+        {
+          id: 'string',
+          title: 'string',
+          body: 'string',
+          tone: 'hype | analytical',
+        },
+      ]),
     ]);
 
-    const list = insightsArraySchema.safeParse(parsed);
-    if (!list.success) {
-      console.warn('[aiInsights] Gemini output failed validation, using mock', list.error.flatten());
-      return mockInsights(matchId);
+    const sh = summaryHighlightsSchema.safeParse(shRaw);
+    const ins = insightsArraySchema.safeParse(insRaw);
+
+    if (!sh.success) {
+      console.warn('[aiInsights] summary/highlights validation failed', sh.error.flatten());
+      throw new ApiError(502, 'AI returned an invalid summary payload. Try again in a moment.');
     }
-    return normalizeInsights(matchId, list.data);
+    if (!ins.success) {
+      console.warn('[aiInsights] insights validation failed', ins.error.flatten());
+      throw new ApiError(502, 'AI returned invalid insight cards. Try again in a moment.');
+    }
+
+    return {
+      summary: sh.data.summary,
+      highlights: sh.data.highlights,
+      insights: normalizeInsights(matchId, ins.data),
+    };
   } catch (e) {
-    console.warn('[aiInsights] Gemini match insights failed, using mock', e);
-    return mockInsights(matchId);
+    if (e instanceof ApiError) throw e;
+    console.error('[aiInsights] Gemini match analysis failed', e);
+    throw new ApiError(502, 'Gemini request failed while building match analysis.');
   }
 }
 
@@ -118,11 +143,14 @@ ${context}`;
 export async function explainWicket(commentarySnippet: string): Promise<string> {
   const trimmed = commentarySnippet.trim().slice(0, 2000);
   if (!trimmed) {
-    return 'No commentary text was provided.';
+    throw new ApiError(400, 'No commentary text was provided.');
   }
 
   if (!geminiService.isConfigured()) {
-    return `Explain wicket (offline mock): likely misjudged length — "${trimmed.slice(0, 120)}${trimmed.length > 120 ? '…' : ''}"`;
+    throw new ApiError(
+      503,
+      'GEMINI_API_KEY is not set. Configure Gemini in backend/.env to use wicket explanations.'
+    );
   }
 
   try {
@@ -137,7 +165,7 @@ export async function explainWicket(commentarySnippet: string): Promise<string> 
     );
     return text.trim();
   } catch (e) {
-    console.warn('[aiInsights] Gemini explainWicket failed, using mock', e);
-    return `Explain wicket (fallback): likely misjudged length — "${trimmed.slice(0, 120)}${trimmed.length > 120 ? '…' : ''}"`;
+    console.error('[aiInsights] Gemini explainWicket failed', e);
+    throw new ApiError(502, 'Gemini could not explain this wicket snippet right now.');
   }
 }

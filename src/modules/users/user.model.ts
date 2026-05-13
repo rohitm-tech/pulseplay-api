@@ -3,12 +3,22 @@ import bcrypt from 'bcrypt';
 
 export type UserRole = 'user' | 'admin';
 
+export interface INotificationPrefs {
+  boundaries: boolean;
+  wickets: boolean;
+  milestones: boolean;
+  polls: boolean;
+}
+
 export interface IUser extends Document {
   name: string;
   email: string;
   password: string;
   avatar?: string;
   favoriteTeam?: string;
+  favoritePlayers: string[];
+  notificationPrefs: INotificationPrefs;
+  followingIds: Types.ObjectId[];
   xpPoints: number;
   badges: string[];
   role: UserRole;
@@ -25,6 +35,17 @@ const userSchema = new Schema<IUser>(
     password: { type: String, required: true, minlength: 8, select: false },
     avatar: { type: String },
     favoriteTeam: { type: String },
+    favoritePlayers: { type: [String], default: [] },
+    notificationPrefs: {
+      type: {
+        boundaries: { type: Boolean, default: true },
+        wickets: { type: Boolean, default: true },
+        milestones: { type: Boolean, default: true },
+        polls: { type: Boolean, default: true },
+      },
+      default: () => ({ boundaries: true, wickets: true, milestones: true, polls: true }),
+    },
+    followingIds: [{ type: Schema.Types.ObjectId, ref: 'User' }],
     xpPoints: { type: Number, default: 0 },
     badges: { type: [String], default: [] },
     role: { type: String, enum: ['user', 'admin'], default: 'user' },
@@ -53,6 +74,10 @@ export interface SafeUser {
   email: string;
   avatar?: string;
   favoriteTeam?: string;
+  favoritePlayers: string[];
+  notificationPrefs: INotificationPrefs;
+  followingCount: number;
+  fanTier: number;
   xpPoints: number;
   badges: string[];
   role: UserRole;
@@ -61,13 +86,31 @@ export interface SafeUser {
   createdAt: Date;
 }
 
+function fanTierFromXp(xp: number): number {
+  if (xp >= 10_000) return 5;
+  if (xp >= 2500) return 4;
+  if (xp >= 500) return 3;
+  if (xp >= 100) return 2;
+  return 1;
+}
+
 export function toSafeUser(doc: IUser & { _id: Types.ObjectId }): SafeUser {
+  const prefs = doc.notificationPrefs ?? {
+    boundaries: true,
+    wickets: true,
+    milestones: true,
+    polls: true,
+  };
   return {
     id: doc._id.toString(),
     name: doc.name,
     email: doc.email,
     avatar: doc.avatar,
     favoriteTeam: doc.favoriteTeam,
+    favoritePlayers: doc.favoritePlayers ?? [],
+    notificationPrefs: prefs,
+    followingCount: doc.followingIds?.length ?? 0,
+    fanTier: fanTierFromXp(doc.xpPoints ?? 0),
     xpPoints: doc.xpPoints,
     badges: doc.badges,
     role: doc.role,
