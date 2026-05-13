@@ -1,0 +1,78 @@
+import mongoose, { Schema, Document, Types } from 'mongoose';
+import bcrypt from 'bcrypt';
+
+export type UserRole = 'user' | 'admin';
+
+export interface IUser extends Document {
+  name: string;
+  email: string;
+  password: string;
+  avatar?: string;
+  favoriteTeam?: string;
+  xpPoints: number;
+  badges: string[];
+  role: UserRole;
+  refreshTokenVersion: number;
+  correctPredictions: number;
+  streak: number;
+  isPasswordCorrect(password: string): Promise<boolean>;
+}
+
+const userSchema = new Schema<IUser>(
+  {
+    name: { type: String, required: true, trim: true, maxlength: 120 },
+    email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+    password: { type: String, required: true, minlength: 8, select: false },
+    avatar: { type: String },
+    favoriteTeam: { type: String },
+    xpPoints: { type: Number, default: 0 },
+    badges: { type: [String], default: [] },
+    role: { type: String, enum: ['user', 'admin'], default: 'user' },
+    refreshTokenVersion: { type: Number, default: 0 },
+    correctPredictions: { type: Number, default: 0 },
+    streak: { type: Number, default: 0 },
+  },
+  { timestamps: true }
+);
+
+userSchema.pre('save', async function (next) {
+  if (!this.isModified('password')) return next();
+  this.password = await bcrypt.hash(this.password, 10);
+  next();
+});
+
+userSchema.methods.isPasswordCorrect = async function (password: string): Promise<boolean> {
+  return bcrypt.compare(password, this.password as string);
+};
+
+export const User = mongoose.model<IUser>('User', userSchema);
+
+export interface SafeUser {
+  id: string;
+  name: string;
+  email: string;
+  avatar?: string;
+  favoriteTeam?: string;
+  xpPoints: number;
+  badges: string[];
+  role: UserRole;
+  correctPredictions: number;
+  streak: number;
+  createdAt: Date;
+}
+
+export function toSafeUser(doc: IUser & { _id: Types.ObjectId }): SafeUser {
+  return {
+    id: doc._id.toString(),
+    name: doc.name,
+    email: doc.email,
+    avatar: doc.avatar,
+    favoriteTeam: doc.favoriteTeam,
+    xpPoints: doc.xpPoints,
+    badges: doc.badges,
+    role: doc.role,
+    correctPredictions: doc.correctPredictions,
+    streak: doc.streak,
+    createdAt: doc.get('createdAt'),
+  };
+}
