@@ -13,7 +13,6 @@ export const config = {
   CRIC_API_KEY: process.env.CRIC_API_KEY || '',
   CRIC_API_BASE: process.env.CRIC_API_BASE || 'https://api.cricapi.com/v1',
   CLIENT_URL: process.env.CLIENT_URL || 'http://localhost:3000',
-  REDIS_URL: process.env.REDIS_URL || '',
   LIVE_POLL_INTERVAL_MS: Number(process.env.LIVE_POLL_INTERVAL_MS) || 45_000,
   /** Google AI Studio / Gemini — see https://aistudio.google.com/apikey */
   GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',

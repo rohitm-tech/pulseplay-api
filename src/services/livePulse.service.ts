@@ -1,5 +1,6 @@
 import type { Server } from 'socket.io';
-import { fetchCurrentMatches, fetchCommentary } from '../services/cricapi.service';
+import { fetchCommentary } from './cricapi.service';
+import { getStoredLiveMatchesPayload } from './liveMatchesStore.service';
 import { emitNewCommentary, emitMatchEvent } from '../sockets';
 import { config } from '../config/env';
 
@@ -8,7 +9,7 @@ export function startLivePulse(io: Server): NodeJS.Timeout {
   return setInterval(async () => {
     tick += 1;
     try {
-      const matches = await fetchCurrentMatches();
+      const { matches } = await getStoredLiveMatchesPayload();
       for (const m of matches) {
         io.of('/matches').to(`match:${m.id}`).emit('live_score_update', {
           matchId: m.id,

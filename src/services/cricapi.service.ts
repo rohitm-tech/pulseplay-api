@@ -1,7 +1,6 @@
 import axios from 'axios';
 import { config } from '../config/env';
 import { ApiError } from '../utils/apiError';
-import { redisCache } from './redis.service';
 
 export interface CricMatchSummary {
   id: string;
@@ -121,18 +120,9 @@ function isCricApiRateOrBlock(e: unknown): boolean {
   return m.includes('blocked') || m.includes('rate') || m.includes('limit');
 }
 
-/** Few pages + pause between calls — CricAPI free tiers block rapid bursts (many pages at once). */
 const CURRENT_MATCHES_MAX_PAGES = 5;
 const CURRENT_MATCHES_INTER_PAGE_MS = 650;
-const CURRENT_MATCHES_CACHE_TTL_SEC = 120;
 
-let currentMatchesInflight: Promise<CricMatchSummary[]> | null = null;
-let lastGoodCurrentMatches: CricMatchSummary[] = [];
-/** When Redis is off, avoid refetching on every short poll interval. */
-let lastCurrentMatchesNetworkAt = 0;
-const CURRENT_MATCHES_NO_REDIS_COOLDOWN_MS = 90_000;
-
-/** CricAPI paginates `currentMatches`; offset advances by the prior page length (skip-style). */
 async function fetchAllCurrentMatchPages(): Promise<CricMatchSummary[]> {
   const seen = new Set<string>();
   const out: CricMatchSummary[] = [];
@@ -176,49 +166,17 @@ async function fetchAllCurrentMatchPages(): Promise<CricMatchSummary[]> {
   return out;
 }
 
-export async function fetchCurrentMatches(): Promise<CricMatchSummary[]> {
+/** Live match list from CricAPI only — call from refresh path, not from routine reads. */
+export async function pullCurrentMatchesFromCricApi(): Promise<CricMatchSummary[]> {
   requireCricKey();
-
-  const cacheKey = 'cricapi:v2:currentMatches';
-  const cached = await redisCache.get<CricMatchSummary[]>(cacheKey);
-  if (cached) return cached;
-
-  if (!redisCache.isEnabled()) {
-    const now = Date.now();
-    if (
-      now - lastCurrentMatchesNetworkAt < CURRENT_MATCHES_NO_REDIS_COOLDOWN_MS &&
-      lastGoodCurrentMatches.length > 0
-    ) {
-      return lastGoodCurrentMatches;
-    }
+  try {
+    return await fetchAllCurrentMatchPages();
+  } catch (e) {
+    if (e instanceof ApiError) throw e;
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error('[cricapi] currentMatches failed', e);
+    throw new ApiError(502, `CricAPI currentMatches request failed: ${msg}`);
   }
-
-  if (currentMatchesInflight) return currentMatchesInflight;
-
-  currentMatchesInflight = (async () => {
-    try {
-      if (!redisCache.isEnabled()) lastCurrentMatchesNetworkAt = Date.now();
-      const mapped = await fetchAllCurrentMatchPages();
-      if (mapped.length > 0) {
-        lastGoodCurrentMatches = mapped;
-        await redisCache.set(cacheKey, mapped, CURRENT_MATCHES_CACHE_TTL_SEC);
-      }
-      return mapped;
-    } catch (e) {
-      if (isCricApiRateOrBlock(e) && lastGoodCurrentMatches.length > 0) {
-        console.warn('[cricapi] currentMatches upstream blocked; serving last successful snapshot');
-        return lastGoodCurrentMatches;
-      }
-      if (e instanceof ApiError) throw e;
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error('[cricapi] currentMatches failed', e);
-      throw new ApiError(502, `CricAPI currentMatches request failed: ${msg}`);
-    } finally {
-      currentMatchesInflight = null;
-    }
-  })();
-
-  return currentMatchesInflight;
 }
 
 export async function fetchMatchById(id: string): Promise<CricMatchSummary | null> {
@@ -250,12 +208,28 @@ export interface CommentaryBall {
   timestamp: string;
 }
 
+const commentaryMem = new Map<string, { at: number; balls: CommentaryBall[] }>();
+const COMMENTARY_MEM_TTL_MS = 15_000;
+const COMMENTARY_MEM_MAX_KEYS = 48;
+
+function commentaryMemPrune(now: number): void {
+  for (const [key, entry] of commentaryMem) {
+    if (now - entry.at > COMMENTARY_MEM_TTL_MS) commentaryMem.delete(key);
+  }
+  while (commentaryMem.size > COMMENTARY_MEM_MAX_KEYS) {
+    const first = commentaryMem.keys().next().value;
+    if (first === undefined) break;
+    commentaryMem.delete(first);
+  }
+}
+
 export async function fetchCommentary(id: string): Promise<CommentaryBall[]> {
   requireCricKey();
 
-  const cacheKey = `cricapi:v2:commentary:${id}`;
-  const cached = await redisCache.get<CommentaryBall[]>(cacheKey);
-  if (cached) return cached;
+  const now = Date.now();
+  commentaryMemPrune(now);
+  const hit = commentaryMem.get(id);
+  if (hit && now - hit.at < COMMENTARY_MEM_TTL_MS) return hit.balls;
 
   try {
     const { data } = await axios.get(`${config.CRIC_API_BASE}/match_commentary`, {
@@ -265,7 +239,7 @@ export async function fetchCommentary(id: string): Promise<CommentaryBall[]> {
     const envelope = assertCricResponse(data);
     const raw = extractCommentaryRows(envelope);
     if (!raw.length) {
-      await redisCache.set(cacheKey, [], 15);
+      commentaryMem.set(id, { at: now, balls: [] });
       return [];
     }
     const normalized = raw.map((item) =>
@@ -278,7 +252,7 @@ export async function fetchCommentary(id: string): Promise<CommentaryBall[]> {
       text: rowToCommentaryText(c),
       timestamp: new Date().toISOString(),
     }));
-    await redisCache.set(cacheKey, balls, 15);
+    commentaryMem.set(id, { at: now, balls });
     return balls;
   } catch (e) {
     if (e instanceof ApiError) throw e;

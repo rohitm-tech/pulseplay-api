@@ -2,18 +2,27 @@ import { Response } from 'express';
 import { Router } from 'express';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { authMiddleware, AuthRequest } from '../../middleware/auth.middleware';
-import { fetchCommentary, fetchCurrentMatches, fetchMatchById } from '../../services/cricapi.service';
+import { fetchCommentary, fetchMatchById } from '../../services/cricapi.service';
+import { getStoredLiveMatchesPayload, refreshLiveMatchesFromCricApi } from '../../services/liveMatchesStore.service';
 import { parseCommentaryLine } from '../../services/commentaryProcessor.service';
 import { buildMatchAnalytics } from '../../services/matchAnalytics.service';
 import { User } from '../users/user.model';
 
 const router = Router();
 
+router.post(
+  '/live/refresh',
+  asyncHandler(async (_req, res: Response) => {
+    const { matches, updatedAt } = await refreshLiveMatchesFromCricApi();
+    res.json({ success: true, data: matches, updatedAt });
+  })
+);
+
 router.get(
   '/live',
   asyncHandler(async (_req, res: Response) => {
-    const matches = await fetchCurrentMatches();
-    res.json({ success: true, data: matches });
+    const { matches, updatedAt } = await getStoredLiveMatchesPayload();
+    res.json({ success: true, data: matches, updatedAt });
   })
 );
 
@@ -21,11 +30,11 @@ router.get(
   '/feed/for-you',
   authMiddleware,
   asyncHandler(async (req: AuthRequest, res: Response) => {
-    const matches = await fetchCurrentMatches();
+    const { matches, updatedAt } = await getStoredLiveMatchesPayload();
     const u = await User.findById(req.auth!.sub).lean();
     const team = (u?.favoriteTeam ?? '').toLowerCase().trim();
     if (!team) {
-      res.json({ success: true, data: matches });
+      res.json({ success: true, data: matches, updatedAt });
       return;
     }
     const scored = matches.map((m) => {
@@ -34,7 +43,7 @@ router.get(
       return { m, score };
     });
     scored.sort((a, b) => b.score - a.score);
-    res.json({ success: true, data: scored.map((x) => x.m) });
+    res.json({ success: true, data: scored.map((x) => x.m), updatedAt });
   })
 );
 
