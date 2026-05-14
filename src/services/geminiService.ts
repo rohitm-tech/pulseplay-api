@@ -1,6 +1,23 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import { config } from '../config/env';
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  if (!ms || ms <= 0) return promise;
+  return new Promise((resolve, reject) => {
+    const id = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(id);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(id);
+        reject(e);
+      }
+    );
+  });
+}
+
 /**
  * Gemini text + JSON helpers — same stack as HackAIBengaluru (`@google/genai`).
  * Instantiate only when GEMINI_API_KEY is set.
@@ -36,17 +53,21 @@ class GeminiService {
     }
   ): Promise<string> {
     try {
-      const response = await this.getClient().models.generateContent({
-        model: this.model,
-        contents: prompt,
-        config: {
-          temperature: options?.temperature ?? 0.7,
-          maxOutputTokens: options?.maxTokens ?? 2048,
-          ...(options?.systemInstruction && {
-            systemInstruction: options.systemInstruction,
-          }),
-        },
-      });
+      const response = await withTimeout(
+        this.getClient().models.generateContent({
+          model: this.model,
+          contents: prompt,
+          config: {
+            temperature: options?.temperature ?? 0.7,
+            maxOutputTokens: options?.maxTokens ?? 2048,
+            ...(options?.systemInstruction && {
+              systemInstruction: options.systemInstruction,
+            }),
+          },
+        }),
+        config.GEMINI_REQUEST_TIMEOUT_MS,
+        'Gemini text'
+      );
 
       const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
       if (!text) {
@@ -146,12 +167,16 @@ class GeminiService {
         }
       }
 
-      const response = await this.getClient().models.generateContent({
-        model: this.model,
-        contents: enhancedPrompt,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- SDK config shape varies by model/features
-        config: genConfig as any,
-      });
+      const response = await withTimeout(
+        this.getClient().models.generateContent({
+          model: this.model,
+          contents: enhancedPrompt,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- SDK config shape varies by model/features
+          config: genConfig as any,
+        }),
+        config.GEMINI_REQUEST_TIMEOUT_MS,
+        'Gemini JSON'
+      );
 
       const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
       if (!text) {

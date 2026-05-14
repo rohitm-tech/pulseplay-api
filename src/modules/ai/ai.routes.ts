@@ -4,7 +4,7 @@ import { asyncHandler } from '../../utils/asyncHandler';
 import { authMiddleware, AuthRequest } from '../../middleware/auth.middleware';
 import { explainWicket, getMatchAiAnalysis } from '../../services/aiInsights.service';
 import { comparePlayers, matchPreviewBlurb, sentimentHeuristic, whatHappened } from '../../services/aiExtras.service';
-import { fetchMatchById } from '../../services/cricapi.service';
+import { getSharedMatchSummary } from '../../services/matchCricCache.service';
 import { geminiService } from '../../services/geminiService';
 import { config } from '../../config/env';
 
@@ -35,7 +35,7 @@ router.get(
   authMiddleware,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     void req;
-    const m = await fetchMatchById(req.params.matchId);
+    const m = await getSharedMatchSummary(req.params.matchId);
     const preview = await matchPreviewBlurb(JSON.stringify(m ?? { id: req.params.matchId }));
     res.json({ success: true, data: preview });
   })

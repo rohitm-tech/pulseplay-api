@@ -1,6 +1,7 @@
 import { z } from 'zod';
-import { fetchCommentary, fetchMatchById, syntheticCommentaryFromMatchCard } from './cricapi.service';
+import { syntheticCommentaryFromMatchCard, type CommentaryBall, type CricMatchSummary } from './cricapi.service';
 import { getStoredLiveMatchesPayload } from './liveMatchesStore.service';
+import { getSharedCommentary, getSharedMatchSummary } from './matchCricCache.service';
 import { geminiService } from './geminiService';
 import { ApiError } from '../utils/apiError';
 import { parseCommentaryLine } from './commentaryProcessor.service';
@@ -45,7 +46,7 @@ function normalizeInsights(matchId: string, raw: z.infer<typeof insightsArraySch
   }));
 }
 
-function buildContextBlock(matchId: string, match: Awaited<ReturnType<typeof fetchMatchById>>, commentaryLines: string[]) {
+function buildContextBlock(matchId: string, match: CricMatchSummary | null, commentaryLines: string[]) {
   return JSON.stringify(
     {
       matchId,
@@ -57,31 +58,27 @@ function buildContextBlock(matchId: string, match: Awaited<ReturnType<typeof fet
   );
 }
 
-async function resolveMatchForDigest(matchId: string): Promise<Awaited<ReturnType<typeof fetchMatchById>>> {
+async function resolveMatchForDigest(matchId: string): Promise<CricMatchSummary | null> {
   try {
-    const m = await fetchMatchById(matchId);
-    if (m?.id) return m;
+    return await getSharedMatchSummary(matchId);
   } catch (e) {
-    console.warn('[aiInsights] fetchMatchById failed; trying stored live snapshot', e);
-  }
-  try {
-    const { matches } = await getStoredLiveMatchesPayload();
-    return matches.find((x) => String(x.id) === String(matchId)) ?? null;
-  } catch (e) {
-    console.warn('[aiInsights] stored live snapshot read failed', e);
-    return null;
+    console.warn('[aiInsights] getSharedMatchSummary failed; trying stored live snapshot', e);
+    try {
+      const { matches } = await getStoredLiveMatchesPayload();
+      return matches.find((x) => String(x.id) === String(matchId)) ?? null;
+    } catch (e2) {
+      console.warn('[aiInsights] stored live snapshot read failed', e2);
+      return null;
+    }
   }
 }
 
-async function resolveCommentaryForDigest(
-  matchId: string,
-  match: Awaited<ReturnType<typeof fetchMatchById>>
-): Promise<Awaited<ReturnType<typeof fetchCommentary>>> {
+async function resolveCommentaryForDigest(matchId: string, match: CricMatchSummary | null): Promise<CommentaryBall[]> {
   try {
-    const balls = await fetchCommentary(matchId);
+    const balls = await getSharedCommentary(matchId);
     if (balls.length) return balls;
   } catch (e) {
-    console.warn('[aiInsights] fetchCommentary failed', e);
+    console.warn('[aiInsights] getSharedCommentary failed', e);
   }
   if (match && Array.isArray(match.score) && match.score.length > 0) {
     return syntheticCommentaryFromMatchCard(matchId, match);
@@ -92,8 +89,8 @@ async function resolveCommentaryForDigest(
 /** Heuristic digest when Gemini is off or fails — keeps the second screen usable. */
 export function buildOfflineMatchAiPack(
   matchId: string,
-  match: Awaited<ReturnType<typeof fetchMatchById>>,
-  commentary: Awaited<ReturnType<typeof fetchCommentary>>
+  match: CricMatchSummary | null,
+  commentary: CommentaryBall[]
 ): MatchAiPack {
   const now = new Date().toISOString();
   const tail = commentary.slice(-14);

@@ -2,8 +2,8 @@ import { Response } from 'express';
 import { Router } from 'express';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { authMiddleware, AuthRequest } from '../../middleware/auth.middleware';
-import { fetchCommentary, fetchMatchById } from '../../services/cricapi.service';
 import { getStoredLiveMatchesPayload, refreshLiveMatchesFromCricApi } from '../../services/liveMatchesStore.service';
+import { getSharedCommentary, getSharedMatchSummary } from '../../services/matchCricCache.service';
 import { parseCommentaryLine } from '../../services/commentaryProcessor.service';
 import { buildMatchAnalytics } from '../../services/matchAnalytics.service';
 import { User } from '../users/user.model';
@@ -50,7 +50,7 @@ router.get(
 router.get(
   '/:id/analytics',
   asyncHandler(async (req, res: Response) => {
-    const [match, rawBalls] = await Promise.all([fetchMatchById(req.params.id), fetchCommentary(req.params.id)]);
+    const [match, rawBalls] = await Promise.all([getSharedMatchSummary(req.params.id), getSharedCommentary(req.params.id)]);
     const analytics = buildMatchAnalytics(match, rawBalls);
     res.json({ success: true, data: analytics });
   })
@@ -61,7 +61,7 @@ router.get(
   authMiddleware,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     void req;
-    const balls = await fetchCommentary(req.params.id);
+    const balls = await getSharedCommentary(req.params.id);
     const enriched = balls.map((b) => ({
       ...b,
       event: parseCommentaryLine(b.text),
@@ -73,7 +73,7 @@ router.get(
 router.get(
   '/:id',
   asyncHandler(async (req, res: Response) => {
-    const match = await fetchMatchById(req.params.id);
+    const match = await getSharedMatchSummary(req.params.id);
     if (!match) {
       res.status(404).json({ success: false, message: 'Match not found' });
       return;
