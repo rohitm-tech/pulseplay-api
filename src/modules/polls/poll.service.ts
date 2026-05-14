@@ -37,13 +37,16 @@ export async function createPoll(input: {
     correctAnswer: data.correctAnswer,
     createdBy: input.createdBy,
   });
-  ioRef?.of('/polls').to(`match:${data.matchId}`).emit('poll_created', {
+  const pollCreatedPayload = {
     pollId: poll._id.toString(),
     question: poll.question,
     options: poll.options,
     matchId: poll.matchId,
     expiresAt: poll.expiresAt,
-  });
+  };
+  ioRef?.of('/polls').to(`match:${data.matchId}`).emit('poll_created', pollCreatedPayload);
+  /** Same room on /matches so every fan in the match room sees new polls without a separate polls socket. */
+  ioRef?.of('/matches').to(`match:${data.matchId}`).emit('poll_created', pollCreatedPayload);
   return poll;
 }
 
@@ -93,11 +96,13 @@ export async function closePollAndScore(pollId: string) {
     await User.findByIdAndUpdate(l.userId, { $set: { streak: 0 } });
     await Leaderboard.findOneAndUpdate({ userId: l.userId }, { $set: { streak: 0 } }, { upsert: true });
   }
-  ioRef?.of('/polls').to(`match:${poll.matchId}`).emit('poll_result', {
+  const pollResultPayload = {
     pollId: poll._id.toString(),
     correctAnswer: poll.correctAnswer,
     winners: winners.length,
-  });
+  };
+  ioRef?.of('/polls').to(`match:${poll.matchId}`).emit('poll_result', pollResultPayload);
+  ioRef?.of('/matches').to(`match:${poll.matchId}`).emit('poll_result', pollResultPayload);
   ioRef?.of('/matches').to(`match:${poll.matchId}`).emit('leaderboard_update', { reason: 'poll_result' });
   return poll;
 }

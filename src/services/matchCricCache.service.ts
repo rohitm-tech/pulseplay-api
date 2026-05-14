@@ -8,6 +8,35 @@ import {
 } from './cricapi.service';
 import { getStoredLiveMatchesPayload } from './liveMatchesStore.service';
 
+function commentaryBallFromStoredRow(row: unknown): CommentaryBall | null {
+  if (!row || typeof row !== 'object') return null;
+  const r = row as Record<string, unknown>;
+  const text = typeof r.text === 'string' ? r.text.trim() : '';
+  if (!text) return null;
+  const ts = typeof r.timestamp === 'string' && r.timestamp ? r.timestamp : new Date().toISOString();
+  return {
+    id: typeof r.id === 'string' && r.id ? r.id : `ball-${Math.random().toString(36).slice(2, 10)}`,
+    over: typeof r.over === 'string' ? r.over : String(r.over ?? ''),
+    ball: typeof r.ball === 'string' ? r.ball : String(r.ball ?? ''),
+    text,
+    timestamp: ts,
+  };
+}
+
+/** Read cached commentary from Mongo only (no CricAPI). Use for AI poll generation from stored balls. */
+export async function getCommentaryFromDatabase(matchId: string): Promise<CommentaryBall[]> {
+  const id = String(matchId).trim();
+  if (!id) return [];
+  const cache = await MatchCricCache.findById(id).lean<{ commentary?: unknown[] } | null>();
+  if (!cache?.commentary || !Array.isArray(cache.commentary)) return [];
+  const out: CommentaryBall[] = [];
+  for (const row of cache.commentary) {
+    const b = commentaryBallFromStoredRow(row);
+    if (b) out.push(b);
+  }
+  return out;
+}
+
 const summaryInflight = new Map<string, Promise<CricMatchSummary | null>>();
 const commentaryInflight = new Map<string, Promise<CommentaryBall[]>>();
 
