@@ -22,11 +22,15 @@ export function startLivePulse(io: Server): NodeJS.Timeout {
         const pulseCommentary = matches.slice(0, 4);
         for (let i = 0; i < pulseCommentary.length; i++) {
           const m = pulseCommentary[i];
-          const commentary = await fetchCommentary(m.id);
-          const last = commentary[commentary.length - 1];
-          if (last) {
-            emitNewCommentary(io, m.id, { text: last.text, over: last.over });
-            emitMatchEvent(io, m.id, { type: 'tick', source: 'pulse', over: last.over });
+          try {
+            const commentary = await fetchCommentary(m.id);
+            const last = commentary[commentary.length - 1];
+            if (last) {
+              emitNewCommentary(io, m.id, { text: last.text, over: last.over });
+              emitMatchEvent(io, m.id, { type: 'tick', source: 'pulse', over: last.over });
+            }
+          } catch (err) {
+            console.warn(`[livePulse] commentary skip match=${m.id}`, err);
           }
           if (i < pulseCommentary.length - 1) await new Promise((r) => setTimeout(r, 400));
         }

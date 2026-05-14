@@ -5,8 +5,20 @@ import { authMiddleware, AuthRequest } from '../../middleware/auth.middleware';
 import { explainWicket, getMatchAiAnalysis } from '../../services/aiInsights.service';
 import { comparePlayers, matchPreviewBlurb, sentimentHeuristic, whatHappened } from '../../services/aiExtras.service';
 import { fetchMatchById } from '../../services/cricapi.service';
+import { geminiService } from '../../services/geminiService';
+import { config } from '../../config/env';
 
 const router = Router();
+
+router.get('/status', (_req, res) => {
+  res.json({
+    success: true,
+    data: {
+      configured: geminiService.isConfigured(),
+      model: geminiService.isConfigured() ? config.GEMINI_MODEL : null,
+    },
+  });
+});
 
 router.get(
   '/match/:matchId',

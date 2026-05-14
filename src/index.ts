@@ -17,7 +17,6 @@ async function bootstrap() {
 
   httpServer.listen(config.PORT, () => {
     console.log(`PulsePlay API + WebSocket on :${config.PORT}`);
-    console.log(`GET http://localhost:${config.PORT}/health — check routers.users and routers.features are > 0`);
   });
 }
 

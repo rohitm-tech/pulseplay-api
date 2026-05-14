@@ -208,6 +208,45 @@ export interface CommentaryBall {
   timestamp: string;
 }
 
+/**
+ * When CricAPI returns no ball-by-ball rows, build readable lines from `match_info.score`
+ * so analytics, AI context, and the second screen still populate.
+ */
+export function syntheticCommentaryFromMatchCard(matchId: string, match: CricMatchSummary): CommentaryBall[] {
+  const score = match.score;
+  if (!Array.isArray(score) || score.length === 0) return [];
+  const ts = new Date().toISOString();
+  const balls: CommentaryBall[] = [];
+  score.forEach((raw, i) => {
+    if (!raw || typeof raw !== 'object') return;
+    const row = raw as Record<string, unknown>;
+    const r = Number(row.r ?? row.run ?? 0);
+    const w = Number(row.w ?? row.wickets ?? 0);
+    const o = row.o ?? row.overs;
+    const over = o != null && String(o).length > 0 ? String(o) : String(i);
+    const inning = String(row.inning ?? row.innings ?? `Innings ${i + 1}`);
+    const rSafe = Number.isFinite(r) ? r : 0;
+    const wSafe = Number.isFinite(w) ? w : 0;
+    balls.push({
+      id: `${matchId}-card-${i}`,
+      over,
+      ball: '0',
+      text: `Scorecard snapshot — ${inning}: ${rSafe}/${wSafe} after ${over} overs.`,
+      timestamp: ts,
+    });
+  });
+  if (match.status && /\b(won|win by|victory|tied|tie)\b/i.test(match.status)) {
+    balls.push({
+      id: `${matchId}-card-result`,
+      over: balls[balls.length - 1]?.over ?? '0',
+      ball: '0',
+      text: `WIN! ${match.status}`,
+      timestamp: ts,
+    });
+  }
+  return balls;
+}
+
 const commentaryMem = new Map<string, { at: number; balls: CommentaryBall[] }>();
 const COMMENTARY_MEM_TTL_MS = 15_000;
 const COMMENTARY_MEM_MAX_KEYS = 48;
@@ -239,6 +278,17 @@ export async function fetchCommentary(id: string): Promise<CommentaryBall[]> {
     const envelope = assertCricResponse(data);
     const raw = extractCommentaryRows(envelope);
     if (!raw.length) {
+      let synthetic: CommentaryBall[] = [];
+      try {
+        const match = await fetchMatchById(id);
+        if (match) synthetic = syntheticCommentaryFromMatchCard(id, match);
+      } catch {
+        /* ignore */
+      }
+      if (synthetic.length) {
+        commentaryMem.set(id, { at: now, balls: synthetic });
+        return synthetic;
+      }
       commentaryMem.set(id, { at: now, balls: [] });
       return [];
     }
@@ -255,7 +305,29 @@ export async function fetchCommentary(id: string): Promise<CommentaryBall[]> {
     commentaryMem.set(id, { at: now, balls });
     return balls;
   } catch (e) {
-    if (e instanceof ApiError) throw e;
+    if (e instanceof ApiError) {
+      try {
+        const match = await fetchMatchById(id);
+        const synthetic = match ? syntheticCommentaryFromMatchCard(id, match) : [];
+        if (synthetic.length) {
+          commentaryMem.set(id, { at: now, balls: synthetic });
+          return synthetic;
+        }
+      } catch {
+        /* fall through */
+      }
+      throw e;
+    }
+    try {
+      const match = await fetchMatchById(id);
+      const synthetic = match ? syntheticCommentaryFromMatchCard(id, match) : [];
+      if (synthetic.length) {
+        commentaryMem.set(id, { at: now, balls: synthetic });
+        return synthetic;
+      }
+    } catch {
+      /* fall through */
+    }
     const msg = e instanceof Error ? e.message : String(e);
     console.error('[cricapi] match_commentary failed', e);
     throw new ApiError(502, `CricAPI match_commentary request failed: ${msg}`);
